@@ -1,0 +1,247 @@
+name: Build & Publish Prebuilt Libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      pgmicro_ref:
+        description: 'pgmicro ref (tag or branch)'
+        required: true
+      push_changes:
+        description: 'push changes to the repo'
+        required: true
+        type: boolean
+      nonce:
+        description: 'some unique nonce'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-libs-${{ github.event.inputs.pgmicro_ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }}${{ matrix.name_suffix || '' }}, nonce=${{ github.event.inputs.nonce }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
+          - os: macos-14
+          - os: macos-15-intel
+          - os: windows-latest
+          - os: ubuntu-latest
+            container: alpine:latest
+            musl_tag: true
+            name_suffix: " (Alpine AMD64)"
+          - os: ubuntu-24.04-arm
+            musl_tag: true
+            manual_container: true
+            name_suffix: " (Alpine ARM64)"
+
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Alpine dependencies
+        if: matrix.container == 'alpine:latest'
+        run: |
+          apk add --no-cache bash curl gcc musl-dev git
+          # Install Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source $HOME/.cargo/env
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Clean libs dir
+        shell: bash
+        run: rm -rf libs && mkdir -p libs
+
+      - name: Build library (container)
+        if: matrix.manual_container == true
+        run: |
+          docker run --rm \
+            -v $PWD:/work -w /work \
+            alpine:latest /bin/sh -c "
+              apk add --no-cache bash curl gcc musl-dev git build-base rustup && \
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+              source /root/.cargo/env && \
+              echo Building... && \
+              PGMICRO_BUILD_REF='${{ github.event.inputs.pgmicro_ref }}' PGMICRO_LIBC_VARIANT='_musl' bash ./build_libs.sh && bash ./hash_libs.sh
+            "
+
+      - name: Set up Rust (host)
+        if: matrix.manual_container != true
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        if: matrix.manual_container != true
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+
+      - name: Install Alpine dependencies
+        if: matrix.container == 'alpine:latest'
+        run: |
+          apk add --no-cache bash curl gcc musl-dev git
+          # Install Rust
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          source $HOME/.cargo/env
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Make script executable (POSIX)
+        if: matrix.manual_container != true && runner.os != 'Windows'
+        run: chmod +x ./build_libs.sh
+
+      - name: Build cdylib (release)
+        if: matrix.manual_container != true
+        shell: bash
+        run: |
+          export PGMICRO_BUILD_REF=${{ github.event.inputs.pgmicro_ref }}
+          ./build_libs.sh
+          ./hash_libs.sh
+
+      - name: Check after build
+        shell: bash
+        run: |
+          echo "After build, libs/ contains:"
+          find libs -maxdepth 3 -type f || true
+
+      - name: setup go (host)
+        if: matrix.manual_container != true
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: run test (host, musl)
+        if: matrix.manual_container != true && matrix.musl_tag == true
+        run: go test --tags musl ./... -v
+
+      - name: run test (host, glibc)
+        if: matrix.manual_container != true && matrix.musl_tag != true
+        run: go test ./... -v
+
+      - name: run test (container, musl)
+        if: matrix.manual_container == true
+        run: |
+          docker run --rm \
+            -v $PWD:/work -w /work \
+            alpine:latest /bin/sh -c "
+              apk add --no-cache go && \
+              go test --tags musl ./... -v
+            "
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}-${{ matrix.name_suffix || '' }}
+          path: libs/**/*
+          if-no-files-found: error
+
+  publish:
+    name: Aggregate & PR commit
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Switch to new branch
+        env:
+          PGMICRO_REF: ${{ github.event.inputs.pgmicro_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Determine branch name based on ref type
+          BRANCH="pgmicro-branch-${PGMICRO_REF}"
+
+          echo "Target branch: $BRANCH"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Try to fetch existing branch if present
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH exists on remote — checking it out."
+
+            git fetch origin "$BRANCH":"$BRANCH"
+            git checkout "$BRANCH"
+          else
+            echo "Branch $BRANCH does not exist — creating it."
+            git checkout -b "$BRANCH"
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: _libs_artifacts
+          merge-multiple: true
+
+      - name: Merge platform folders into repo
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          mkdir -p libs
+          echo "Downloaded artifact roots:"
+          for d in _libs_artifacts/*; do
+            [ -d "$d" ] && echo " - $(basename "$d")"
+          done
+          for src in _libs_artifacts/*; do
+            [ -d "$src" ] || continue
+            plat="$(basename "$src")"
+            dest="libs/$plat"
+            echo "Syncing $src -> $dest"
+            mkdir -p "$dest"
+            rsync -a "$src"/ "$dest"/
+          done
+
+          echo "Merged libs layout:"
+          for f in libs/*/*; do [ -f "$f" ] && echo "$f"; done
+
+      - name: Skip if no libs changed
+        shell: bash
+        run: |
+          git add -N libs || true
+          if git diff --quiet -- libs ; then
+            echo "No changes under libs/; skipping PR."
+            exit 0
+          fi
+
+      - name: Create / update prebuilt-libs branch and push
+        if: github.event.inputs.push_changes == 'true'
+        shell: bash
+        env:
+          PGMICRO_REF: ${{ github.event.inputs.pgmicro_ref }}
+        run: |
+          set -euo pipefail
+
+          BRANCH="pgmicro-branch-${PGMICRO_REF}"
+
+          echo "Staging changes..."
+          git add libs
+
+          if git diff --cached --quiet; then
+            echo "No staged changes, skipping push."
+            exit 0
+          fi
+
+          git commit -m "Update prebuilt libs for ref: ${PGMICRO_REF}"
+
+          echo "Pushing branch: $BRANCH"
+          git push --set-upstream origin "$BRANCH"
+
+          if [[ "$PGMICRO_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([\-+][0-9A-Za-z\.-]+)?$ ]]; then
+            git tag "$PGMICRO_REF"
+            git push --tags
+          fi
