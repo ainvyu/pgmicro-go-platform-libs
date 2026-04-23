@@ -93,11 +93,7 @@ jobs:
           echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> "$GITHUB_ENV"
           echo "resolved LIBCLANG_PATH=$LIBCLANG_DIR"
 
-          # Wire zig cc as the C/C++ compiler + linker for the Rust
-          # target. cargo reads CARGO_TARGET_<TRIPLE>_LINKER.
-          export CC_${{ matrix.rust_target }}_under="zig cc -target ${{ matrix.zig_target }}"
-          TARGET_ENV=$(echo "${{ matrix.rust_target }}" | tr 'a-z-' 'A-Z_')
-          export CC=zig
+          # Emit two shims that front `zig cc`/`zig c++` with -target.
           cat > "$RUNNER_TEMP/zig-cc.sh" <<EOF
           #!/usr/bin/env bash
           exec zig cc -target ${{ matrix.zig_target }} "\$@"
@@ -107,9 +103,18 @@ jobs:
           exec zig c++ -target ${{ matrix.zig_target }} "\$@"
           EOF
           chmod +x "$RUNNER_TEMP/zig-cc.sh" "$RUNNER_TEMP/zig-cxx.sh"
-          export CC_${{ matrix.rust_target }}="$RUNNER_TEMP/zig-cc.sh"
-          export CXX_${{ matrix.rust_target }}="$RUNNER_TEMP/zig-cxx.sh"
-          export CARGO_TARGET_${TARGET_ENV}_LINKER="$RUNNER_TEMP/zig-cc.sh"
+
+          # Cargo + cc-rs env var convention: replace every non-identifier
+          # char in the Rust target triple with '_'. So
+          # `x86_64-unknown-linux-musl` becomes `x86_64_unknown_linux_musl`.
+          ENVID=$(echo "${{ matrix.rust_target }}" | tr - _)
+          TARGET_UP=$(echo "$ENVID" | tr a-z A-Z)
+          export "CC_${ENVID}=$RUNNER_TEMP/zig-cc.sh"
+          export "CXX_${ENVID}=$RUNNER_TEMP/zig-cxx.sh"
+          export "CARGO_TARGET_${TARGET_UP}_LINKER=$RUNNER_TEMP/zig-cc.sh"
+          echo "CC_${ENVID}=$RUNNER_TEMP/zig-cc.sh" >> "$GITHUB_ENV"
+          echo "CXX_${ENVID}=$RUNNER_TEMP/zig-cxx.sh" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_${TARGET_UP}_LINKER=$RUNNER_TEMP/zig-cc.sh" >> "$GITHUB_ENV"
 
           PGMICRO_BUILD_REF='${{ github.event.inputs.pgmicro_ref }}' \
           PGMICRO_LIBC_VARIANT='_musl' \
