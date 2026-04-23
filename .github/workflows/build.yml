@@ -93,6 +93,12 @@ jobs:
           echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> "$GITHUB_ENV"
           echo "resolved LIBCLANG_PATH=$LIBCLANG_DIR"
 
+          # Ensure the Rust std for this target is present — the
+          # dtolnay/rust-toolchain action pins tools but the `targets:`
+          # list doesn't always survive to this step's PATH under the
+          # default shell. Re-run idempotently.
+          rustup target add ${{ matrix.rust_target }}
+
           # Emit two shims that front `zig cc`/`zig c++` with -target.
           cat > "$RUNNER_TEMP/zig-cc.sh" <<EOF
           #!/usr/bin/env bash
