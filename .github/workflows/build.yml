@@ -32,17 +32,25 @@ jobs:
           - os: macos-14
           - os: macos-15-intel
           - os: windows-latest
+          # musl targets built on a glibc host via `zig cc`. Alpine
+          # containers kept falling over on bindgen's libclang
+          # discovery; zig ships its own bundled clang/LLVM + musl
+          # headers so we can cross-compile musl from ubuntu instead.
+          # See build_musl_with_zig step below.
           - os: ubuntu-latest
-            container: alpine:latest
-            musl_tag: true
-            name_suffix: " (Alpine AMD64)"
+            musl_zig: true
+            zig_target: x86_64-linux-musl
+            rust_target: x86_64-unknown-linux-musl
+            musl_platform: linux_amd64_musl
+            name_suffix: " (musl AMD64 via zig cc)"
           - os: ubuntu-24.04-arm
-            musl_tag: true
-            manual_container: true
-            name_suffix: " (Alpine ARM64)"
+            musl_zig: true
+            zig_target: aarch64-linux-musl
+            rust_target: aarch64-unknown-linux-musl
+            musl_platform: linux_arm64_musl
+            name_suffix: " (musl ARM64 via zig cc)"
 
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
 
     steps:
       - name: Checkout
@@ -50,76 +58,64 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Alpine dependencies
-        if: matrix.container == 'alpine:latest'
-        run: |
-          # pgmicro's pg_query crate uses bindgen → needs libclang.so
-          # at bindgen load time. Alpine's unversioned `clang-dev`
-          # package only ships the headers; the runtime .so lives in
-          # `clang-libs`/`clang-static` or a versioned variant. Pull
-          # in both the LLVM+Clang dev+runtime packages so we get
-          # headers AND the shared library.
-          apk add --no-cache bash curl gcc musl-dev git findutils \
-            clang-dev clang-libs clang-static \
-            llvm-dev llvm-libs llvm-static
-          # Locate libclang.so dynamically — Alpine may stash it at a
-          # versioned path like /usr/lib/llvm17/lib/libclang.so.17.
-          LIBCLANG_FILE=$(find /usr -name 'libclang.so*' 2>/dev/null | head -1)
-          if [ -z "$LIBCLANG_FILE" ]; then
-            echo "libclang.so not found after apk add; aborting"
-            exit 1
-          fi
-          LIBCLANG_DIR=$(dirname "$LIBCLANG_FILE")
-          echo "resolved LIBCLANG_PATH=$LIBCLANG_DIR ($LIBCLANG_FILE)"
-          echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> $GITHUB_ENV
-          # Install Rust
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          source $HOME/.cargo/env
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-
       - name: Clean libs dir
         shell: bash
         run: rm -rf libs && mkdir -p libs
 
-      - name: Build library (container)
-        if: matrix.manual_container == true
-        run: |
-          docker run --rm \
-            -v $PWD:/work -w /work \
-            alpine:latest /bin/sh -c "
-              apk add --no-cache bash curl gcc musl-dev git build-base rustup findutils \
-                clang-dev clang-libs clang-static llvm-dev llvm-libs llvm-static && \
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-              source /root/.cargo/env && \
-              LIBCLANG_FILE=\$(find /usr -name 'libclang.so*' 2>/dev/null | head -1) && \
-              export LIBCLANG_PATH=\$(dirname \$LIBCLANG_FILE) && \
-              echo \"Using LIBCLANG_PATH=\$LIBCLANG_PATH\" && \
-              PGMICRO_BUILD_REF='${{ github.event.inputs.pgmicro_ref }}' PGMICRO_LIBC_VARIANT='_musl' bash ./build_libs.sh && bash ./hash_libs.sh
-            "
-
-      - name: Set up Rust (host)
-        if: matrix.manual_container != true
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Cache cargo
-        if: matrix.manual_container != true
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             . -> target
 
-      - name: Install Alpine dependencies
-        if: matrix.container == 'alpine:latest'
+      - name: Install zig (musl cross)
+        if: matrix.musl_zig == true
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.14.1
+
+      - name: Build musl via zig cc
+        if: matrix.musl_zig == true
+        shell: bash
         run: |
-          # pgmicro's pg_query crate uses bindgen → needs libclang.
-          # `clang-dev` pulls in libclang.so; `llvm-dev` gives us llvm-config.
-          apk add --no-cache bash curl gcc musl-dev git clang-dev llvm-dev
-          export LIBCLANG_PATH=/usr/lib
-          echo "LIBCLANG_PATH=/usr/lib" >> $GITHUB_ENV
-          # Install Rust
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          source $HOME/.cargo/env
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          # Host libclang (ubuntu has clang + llvm-dev) handles bindgen
+          # C header parsing. zig cc handles compilation + linking
+          # against the target (musl) by bundling its own clang and
+          # the musl sysroot.
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev llvm-dev findutils
+          LIBCLANG_DIR=$(llvm-config --libdir)
+          echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> "$GITHUB_ENV"
+          echo "resolved LIBCLANG_PATH=$LIBCLANG_DIR"
+
+          # Wire zig cc as the C/C++ compiler + linker for the Rust
+          # target. cargo reads CARGO_TARGET_<TRIPLE>_LINKER.
+          export CC_${{ matrix.rust_target }}_under="zig cc -target ${{ matrix.zig_target }}"
+          TARGET_ENV=$(echo "${{ matrix.rust_target }}" | tr 'a-z-' 'A-Z_')
+          export CC=zig
+          cat > "$RUNNER_TEMP/zig-cc.sh" <<EOF
+          #!/usr/bin/env bash
+          exec zig cc -target ${{ matrix.zig_target }} "\$@"
+          EOF
+          cat > "$RUNNER_TEMP/zig-cxx.sh" <<EOF
+          #!/usr/bin/env bash
+          exec zig c++ -target ${{ matrix.zig_target }} "\$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/zig-cc.sh" "$RUNNER_TEMP/zig-cxx.sh"
+          export CC_${{ matrix.rust_target }}="$RUNNER_TEMP/zig-cc.sh"
+          export CXX_${{ matrix.rust_target }}="$RUNNER_TEMP/zig-cxx.sh"
+          export CARGO_TARGET_${TARGET_ENV}_LINKER="$RUNNER_TEMP/zig-cc.sh"
+
+          PGMICRO_BUILD_REF='${{ github.event.inputs.pgmicro_ref }}' \
+          PGMICRO_LIBC_VARIANT='_musl' \
+          PGMICRO_CARGO_TARGET='${{ matrix.rust_target }}' \
+            bash ./build_libs.sh
+          bash ./hash_libs.sh
 
       - name: Make script executable (POSIX)
         if: matrix.manual_container != true && runner.os != 'Windows'

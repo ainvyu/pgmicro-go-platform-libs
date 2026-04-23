@@ -91,9 +91,26 @@ case "$OS" in
   windows) FINAL_NAME="${PGMICRO_OUTPUT_NAME}.dll" ;;
 esac
 
-# Rust target for musl builds
+# Rust target. Two paths:
+# 1. Caller sets PGMICRO_CARGO_TARGET explicitly (e.g. zig cc cross
+#    build driven by CI on a glibc host) — honour that and add
+#    --target to the cargo invocation.
+# 2. Legacy musl-on-Alpine path where PGMICRO_LIBC_VARIANT=_musl +
+#    Alpine host — derive the target from $ARCH.
 RUST_TARGET=""
-if [[ "$PGMICRO_LIBC_VARIANT" == "_musl" ]]; then
+if [[ -n "${PGMICRO_CARGO_TARGET:-}" ]]; then
+  RUST_TARGET="$PGMICRO_CARGO_TARGET"
+  if [[ "$PGMICRO_LIBC_VARIANT" == "_musl" ]]; then
+    export RUSTFLAGS="-C target-feature=-crt-static"
+  fi
+  if command -v rustup >/dev/null 2>&1; then
+    if ! rustup target list --installed | grep -q "$RUST_TARGET"; then
+      echo "Installing Rust target: $RUST_TARGET"
+      rustup target add "$RUST_TARGET"
+    fi
+  fi
+  CARGO_ARGS_ARR+=("--target" "$RUST_TARGET")
+elif [[ "$PGMICRO_LIBC_VARIANT" == "_musl" ]]; then
   # https://github.com/rust-lang/rust/issues/59302
   export RUSTFLAGS="-C target-feature=-crt-static"
   case "$ARCH" in
