@@ -53,11 +53,25 @@ jobs:
       - name: Install Alpine dependencies
         if: matrix.container == 'alpine:latest'
         run: |
-          # pgmicro's pg_query crate uses bindgen → needs libclang.
-          # `clang-dev` pulls in libclang.so; `llvm-dev` gives us llvm-config.
-          apk add --no-cache bash curl gcc musl-dev git clang-dev llvm-dev
-          export LIBCLANG_PATH=/usr/lib
-          echo "LIBCLANG_PATH=/usr/lib" >> $GITHUB_ENV
+          # pgmicro's pg_query crate uses bindgen → needs libclang.so
+          # at bindgen load time. Alpine's unversioned `clang-dev`
+          # package only ships the headers; the runtime .so lives in
+          # `clang-libs`/`clang-static` or a versioned variant. Pull
+          # in both the LLVM+Clang dev+runtime packages so we get
+          # headers AND the shared library.
+          apk add --no-cache bash curl gcc musl-dev git findutils \
+            clang-dev clang-libs clang-static \
+            llvm-dev llvm-libs llvm-static
+          # Locate libclang.so dynamically — Alpine may stash it at a
+          # versioned path like /usr/lib/llvm17/lib/libclang.so.17.
+          LIBCLANG_FILE=$(find /usr -name 'libclang.so*' 2>/dev/null | head -1)
+          if [ -z "$LIBCLANG_FILE" ]; then
+            echo "libclang.so not found after apk add; aborting"
+            exit 1
+          fi
+          LIBCLANG_DIR=$(dirname "$LIBCLANG_FILE")
+          echo "resolved LIBCLANG_PATH=$LIBCLANG_DIR ($LIBCLANG_FILE)"
+          echo "LIBCLANG_PATH=$LIBCLANG_DIR" >> $GITHUB_ENV
           # Install Rust
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           source $HOME/.cargo/env
@@ -73,11 +87,13 @@ jobs:
           docker run --rm \
             -v $PWD:/work -w /work \
             alpine:latest /bin/sh -c "
-              apk add --no-cache bash curl gcc musl-dev git build-base rustup clang-dev llvm-dev && \
+              apk add --no-cache bash curl gcc musl-dev git build-base rustup findutils \
+                clang-dev clang-libs clang-static llvm-dev llvm-libs llvm-static && \
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
               source /root/.cargo/env && \
-              export LIBCLANG_PATH=/usr/lib && \
-              echo Building... && \
+              LIBCLANG_FILE=\$(find /usr -name 'libclang.so*' 2>/dev/null | head -1) && \
+              export LIBCLANG_PATH=\$(dirname \$LIBCLANG_FILE) && \
+              echo \"Using LIBCLANG_PATH=\$LIBCLANG_PATH\" && \
               PGMICRO_BUILD_REF='${{ github.event.inputs.pgmicro_ref }}' PGMICRO_LIBC_VARIANT='_musl' bash ./build_libs.sh && bash ./hash_libs.sh
             "
 
