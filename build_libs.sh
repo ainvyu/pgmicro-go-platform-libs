@@ -151,6 +151,16 @@ echo "FINAL_NAME:              $FINAL_NAME"
 git clone --single-branch --depth 1 --branch "$PGMICRO_BUILD_REF" "$PGMICRO_REPO" "$PGMICRO_BUILD_DIR"
 
 pushd "$PGMICRO_BUILD_DIR"
+# `rust-toolchain.toml` inside pgmicro pins a specific rustc channel
+# (e.g., 1.88.0). Re-run target install inside the pushd so the target
+# lands on THAT toolchain, not whatever was active at the earlier
+# rustup target add call.
+if [[ -n "$RUST_TARGET" ]] && command -v rustup >/dev/null 2>&1; then
+  if ! rustup target list --installed 2>/dev/null | grep -q "^${RUST_TARGET}$"; then
+    echo "Installing Rust target into pgmicro-pinned toolchain: $RUST_TARGET"
+    rustup target add "$RUST_TARGET"
+  fi
+fi
 echo "Building ${PGMICRO_CARGO_PACKAGE} (${PGMICRO_BUILD_PROFILE}, features=${PGMICRO_CARGO_FEATURES}) for ${PLATFORM}"
 cargo build "${CARGO_ARGS_ARR[@]}" --package "${PGMICRO_CARGO_PACKAGE}"
 popd
