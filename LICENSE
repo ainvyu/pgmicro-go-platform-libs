@@ -1,6 +1,11 @@
 MIT License
 
 Copyright (c) 2025 Turso Database
+Copyright (c) 2026 ainvyu (pgmicro-go-platform-libs modifications)
+
+This project is a fork of https://github.com/tursodatabase/turso-go-platform-libs
+and is redistributed under the same MIT License. See README.md for a summary
+of modifications applied on top of the upstream source.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
