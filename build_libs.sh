@@ -16,7 +16,7 @@
 #   PGMICRO_OUTPUT_NAME     output library basename (default: libpgmicro_sdk_kit; upstream produces libturso_sdk_kit and we rename)
 set -euo pipefail
 
-PGMICRO_REPO=${PGMICRO_REPO:-https://github.com/glommer/pgmicro.git}
+PGMICRO_REPO=${PGMICRO_REPO:-https://github.com/ainvyu/pgmicro.git}
 PGMICRO_BUILD_PROFILE=${PGMICRO_BUILD_PROFILE:-lib-release}
 PGMICRO_BUILD_DIR=${PGMICRO_BUILD_DIR:-pgmicro}
 PGMICRO_CARGO_PACKAGE=${PGMICRO_CARGO_PACKAGE:-turso_sdk_kit}

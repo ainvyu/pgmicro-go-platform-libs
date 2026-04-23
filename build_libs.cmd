@@ -2,7 +2,7 @@
 setlocal ENABLEEXTENSIONS ENABLEDELAYEDEXPANSION
 
 :: Defaults
-if "%PGMICRO_REPO%"=="" set PGMICRO_REPO=https://github.com/glommer/pgmicro.git
+if "%PGMICRO_REPO%"=="" set PGMICRO_REPO=https://github.com/ainvyu/pgmicro.git
 if "%PGMICRO_BUILD_PROFILE%"=="" set PGMICRO_BUILD_PROFILE=lib-release
 if "%PGMICRO_BUILD_DIR%"=="" set PGMICRO_BUILD_DIR=pgmicro
 if "%PGMICRO_CARGO_PACKAGE%"=="" set PGMICRO_CARGO_PACKAGE=turso_sdk_kit
