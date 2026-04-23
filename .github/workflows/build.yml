@@ -147,11 +147,11 @@ jobs:
           bash ./hash_libs.sh
 
       - name: Make script executable (POSIX)
-        if: matrix.manual_container != true && runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.musl_zig != true
         run: chmod +x ./build_libs.sh
 
-      - name: Build cdylib (release)
-        if: matrix.manual_container != true
+      - name: Build cdylib (release, glibc/macOS/Windows)
+        if: matrix.musl_zig != true
         shell: bash
         run: |
           export PGMICRO_BUILD_REF=${{ github.event.inputs.pgmicro_ref }}
@@ -165,28 +165,21 @@ jobs:
           find libs -maxdepth 3 -type f || true
 
       - name: setup go (host)
-        if: matrix.manual_container != true
         uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
 
-      - name: run test (host, musl)
-        if: matrix.manual_container != true && matrix.musl_tag == true
-        run: go test --tags musl ./... -v
-
-      - name: run test (host, glibc)
-        if: matrix.manual_container != true && matrix.musl_tag != true
-        run: go test ./... -v
-
-      - name: run test (container, musl)
-        if: matrix.manual_container == true
+      - name: run test (host)
         run: |
-          docker run --rm \
-            -v $PWD:/work -w /work \
-            alpine:latest /bin/sh -c "
-              apk add --no-cache go && \
-              go test --tags musl ./... -v
-            "
+          if [[ "${{ matrix.musl_zig }}" == "true" ]]; then
+            # Only the .so/.a produced on this job is usable; Go tests
+            # don't exercise the library here since go:embed would need
+            # every platform bundled.
+            echo "skipping host test for musl-cross artifact"
+          else
+            go test ./... -v
+          fi
+        shell: bash
 
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
