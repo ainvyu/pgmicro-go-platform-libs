@@ -53,7 +53,11 @@ jobs:
       - name: Install Alpine dependencies
         if: matrix.container == 'alpine:latest'
         run: |
-          apk add --no-cache bash curl gcc musl-dev git
+          # pgmicro's pg_query crate uses bindgen → needs libclang.
+          # `clang-dev` pulls in libclang.so; `llvm-dev` gives us llvm-config.
+          apk add --no-cache bash curl gcc musl-dev git clang-dev llvm-dev
+          export LIBCLANG_PATH=/usr/lib
+          echo "LIBCLANG_PATH=/usr/lib" >> $GITHUB_ENV
           # Install Rust
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           source $HOME/.cargo/env
@@ -69,9 +73,10 @@ jobs:
           docker run --rm \
             -v $PWD:/work -w /work \
             alpine:latest /bin/sh -c "
-              apk add --no-cache bash curl gcc musl-dev git build-base rustup && \
+              apk add --no-cache bash curl gcc musl-dev git build-base rustup clang-dev llvm-dev && \
               curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
               source /root/.cargo/env && \
+              export LIBCLANG_PATH=/usr/lib && \
               echo Building... && \
               PGMICRO_BUILD_REF='${{ github.event.inputs.pgmicro_ref }}' PGMICRO_LIBC_VARIANT='_musl' bash ./build_libs.sh && bash ./hash_libs.sh
             "
@@ -90,7 +95,11 @@ jobs:
       - name: Install Alpine dependencies
         if: matrix.container == 'alpine:latest'
         run: |
-          apk add --no-cache bash curl gcc musl-dev git
+          # pgmicro's pg_query crate uses bindgen → needs libclang.
+          # `clang-dev` pulls in libclang.so; `llvm-dev` gives us llvm-config.
+          apk add --no-cache bash curl gcc musl-dev git clang-dev llvm-dev
+          export LIBCLANG_PATH=/usr/lib
+          echo "LIBCLANG_PATH=/usr/lib" >> $GITHUB_ENV
           # Install Rust
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           source $HOME/.cargo/env
@@ -148,6 +157,10 @@ jobs:
   publish:
     name: Aggregate & PR commit
     needs: build
+    # Run even if some platform builds failed (musl is a known-tricky
+    # variant), as long as at least one matrix entry produced an
+    # artifact. Skip only if every build was cancelled.
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
 
     steps:
