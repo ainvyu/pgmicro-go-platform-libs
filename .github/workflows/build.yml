@@ -100,13 +100,31 @@ jobs:
           rustup target add ${{ matrix.rust_target }}
 
           # Emit two shims that front `zig cc`/`zig c++` with -target.
+          # cc-rs tacks on `--target=<rust-triple>` automatically; zig
+          # only understands zig-style triples (x86_64-linux-musl), so
+          # we strip the cc-rs --target= arg and rely on our own
+          # -target <zig-triple> which comes first.
           cat > "$RUNNER_TEMP/zig-cc.sh" <<EOF
           #!/usr/bin/env bash
-          exec zig cc -target ${{ matrix.zig_target }} "\$@"
+          args=()
+          for a in "\$@"; do
+            case "\$a" in
+              --target=*|-target|-target=*) ;;
+              *) args+=("\$a") ;;
+            esac
+          done
+          exec zig cc -target ${{ matrix.zig_target }} "\${args[@]}"
           EOF
           cat > "$RUNNER_TEMP/zig-cxx.sh" <<EOF
           #!/usr/bin/env bash
-          exec zig c++ -target ${{ matrix.zig_target }} "\$@"
+          args=()
+          for a in "\$@"; do
+            case "\$a" in
+              --target=*|-target|-target=*) ;;
+              *) args+=("\$a") ;;
+            esac
+          done
+          exec zig c++ -target ${{ matrix.zig_target }} "\${args[@]}"
           EOF
           chmod +x "$RUNNER_TEMP/zig-cc.sh" "$RUNNER_TEMP/zig-cxx.sh"
 
