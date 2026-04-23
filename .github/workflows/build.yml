@@ -77,7 +77,7 @@ jobs:
         if: matrix.musl_zig == true
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.14.1
+          version: 0.14.0
 
       - name: Build musl via zig cc
         if: matrix.musl_zig == true
